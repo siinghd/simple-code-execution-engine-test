@@ -1,0 +1,26 @@
+# Exclude Python cache files
+__pycache__
+*.pyc
+*.pyo
+
+# Exclude virtual environments
+venv/
+
+# Exclude IDE and editor files
+.vscode/
+.idea/
+*.swp
+
+# Exclude environment files
+.env
+
+# Exclude git-related files
+.git
+.gitignore
+
+# Exclude Docker-related files
+Dockerfile
+docker-compose.yml
+
+# Exclude other unnecessary files
+README.md
