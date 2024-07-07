@@ -151,139 +151,66 @@ for (const {{inputs, expected, result, passed,time}} of results) {{
 
 def run_java_code(code, function_name, imports, test_cases, temp_dir):
     imports_str = "\n".join(f"import {imp};" for imp in imports)
-    imports_str += "\nimport java.util.*;"
-    imports_str += "\nimport com.fasterxml.jackson.databind.ObjectMapper;"
-    imports_str += "\nimport com.fasterxml.jackson.core.type.TypeReference;"
-
-    def get_java_type(value):
-        if isinstance(value, list):
-            if all(isinstance(item, int) for item in value):
-                return "List<Integer>"
-            elif all(isinstance(item, float) for item in value):
-                return "List<Double>"
-            elif all(isinstance(item, str) for item in value):
-                return "List<String>"
-            else:
-                return "List<Object>"
-        elif isinstance(value, int):
-            return "Integer"
-        elif isinstance(value, float):
-            return "Double"
-        elif isinstance(value, str):
-            return "String"
-        else:
-            return "Object"
-
-    first_input = test_cases[0]['input']
-    param_types = [get_java_type(param) for param in first_input]
-
+    
     test_cases_str = ""
     for test_case in test_cases:
-        inputs = []
-        for input_val in test_case['input']:
-            if isinstance(input_val, list):
-                inputs.append(json.dumps(input_val))
-            elif isinstance(input_val, str):
-                inputs.append(f'"{input_val}"')
-            else:
-                inputs.append(str(input_val))
-        input_str = ", ".join(inputs)
-        test_cases_str += f'testCases.add(new Object[]{{new String[]{{{input_str}}}, "{test_case["expected_output"]}"}});\n'
-
-    convert_inputs = []
-    for i, param_type in enumerate(param_types):
-        convert_inputs.append(f'convertInput(inputs[{i}], "{param_type}")')
-    convert_inputs_str = ", ".join(convert_inputs)
-
+        input_str = ', '.join(map(str, test_case['input']))
+        test_cases_str += f'testCases.add(new Object[]{{new int[][]{{{input_str.replace("[", "{").replace("]", "}")}}}, "{test_case["expected_output"]}"}});\n'
+    
     script = f"""
+    import java.util.*;
     {imports_str}
 
-    public class Solution {{
-        private static final ObjectMapper objectMapper = new ObjectMapper();
-
-        public static void main(String[] args) {{
-            List<Object[]> testCases = new ArrayList<>();
-            {test_cases_str}
-
-            for (Object[] testCase : testCases) {{
-                String[] inputs = (String[]) testCase[0];
-                String expected = (String) testCase[1];
-                try {{
-                    Solution solution = new Solution();
-                    Object[] convertedInputs = new Object[]{{ {convert_inputs_str} }};
-
-                    long startTime = System.nanoTime();
-                    Object result = solution.{function_name}({', '.join(f'({param_types[i]})convertedInputs[{i}]' for i in range(len(param_types)))});
-                    long endTime = System.nanoTime();
-                    long duration = (endTime - startTime);
-                    String resultStr = objectMapper.writeValueAsString(result);
-                    boolean passed = resultStr.equals(expected);
-                    String json = String.format("{{\\"inputs\\": %s, \\"expected\\": %s, \\"result\\": %s, \\"passed\\": %b, \\"time\\": \\"%s\\"}}",
-                                                objectMapper.writeValueAsString(inputs), expected, resultStr, passed, duration);
-                    System.out.println(json);
-                }} catch (Exception e) {{
-                    String json = String.format("{{\\"inputs\\": %s, \\"expected\\": %s, \\"result\\": \\"%s\\", \\"passed\\": false, \\"time\\": \\"0.0\\"}}",
-                                                Arrays.toString(inputs), expected, e.toString());
-                    System.out.println(json);
-                }}
+public class Solution {{
+    public static void main(String[] args) {{
+        
+        List<Object[]> testCases = new ArrayList<>();
+        {test_cases_str}
+        
+        for (Object[] testCase : testCases) {{
+            
+            int[][] inputs = (int[][]) testCase[0];
+            String expected = (String) testCase[1];
+            try {{
+                Solution solution = new Solution();
+                long startTime = System.nanoTime();
+                Object result = solution.{function_name}(inputs[0], inputs[1]);
+                long endTime = System.nanoTime(); 
+                long duration = (endTime - startTime);
+                String resultStr = result.toString();
+                boolean passed = resultStr.equals(expected);
+                String json = String.format("{{\\"inputs\\": \\"%s\\", \\"expected\\": \\"%s\\", \\"result\\": \\"%s\\", \\"passed\\": %b, \\"time\\": \\"%s\\"}}",
+                                            Arrays.deepToString(inputs), expected, resultStr, passed, duration);
+                System.out.println(json);
+            }} catch (Exception e) {{
+                String json = String.format("{{\\"inputs\\": \\"%s\\", \\"expected\\": \\"%s\\", \\"result\\": \\"%s\\", \\"passed\\": false, \\"time\\": \\"0.0\\"}}",
+                                            Arrays.deepToString(inputs), expected, e.toString());
+                System.out.println(json);
             }}
         }}
-
-        private static Object convertInput(String input, String type) throws Exception {{
-            if (type.startsWith("List")) {{
-                if (type.equals("List<Integer>")) {{
-                    return objectMapper.readValue(input, new TypeReference<List<Integer>>() {{}});
-                }} else if (type.equals("List<Double>")) {{
-                    return objectMapper.readValue(input, new TypeReference<List<Double>>() {{}});
-                }} else if (type.equals("List<String>")) {{
-                    return objectMapper.readValue(input, new TypeReference<List<String>>() {{}});
-                }} else {{
-                    return objectMapper.readValue(input, new TypeReference<List<Object>>() {{}});
-                }}
-            }} else if (type.equals("Integer")) {{
-                return Integer.parseInt(input);
-            }} else if (type.equals("Double")) {{
-                return Double.parseDouble(input);
-            }} else if (type.equals("String")) {{
-                return input.substring(1, input.length() - 1);  // Remove quotes
-            }} else {{
-                return input;
-            }}
-        }}
-
-        {code}
     }}
-    """
+    
+    {code}
+}}
+"""
 
     script_path = os.path.join(temp_dir, "Solution.java")
     with open(script_path, "w") as f:
         f.write(script)
 
-    dockerfile_content = """
-    FROM openjdk:11
-    WORKDIR /usr/src/app
-    RUN curl -O https://repo1.maven.org/maven2/com/fasterxml/jackson/core/jackson-databind/2.13.0/jackson-databind-2.13.0.jar && \
-        curl -O https://repo1.maven.org/maven2/com/fasterxml/jackson/core/jackson-core/2.13.0/jackson-core-2.13.0.jar && \
-        curl -O https://repo1.maven.org/maven2/com/fasterxml/jackson/core/jackson-annotations/2.13.0/jackson-annotations-2.13.0.jar
-    COPY Solution.java .
-    RUN javac -cp .:jackson-databind-2.13.0.jar:jackson-core-2.13.0.jar:jackson-annotations-2.13.0.jar Solution.java
-    CMD ["java", "-cp", ".:jackson-databind-2.13.0.jar:jackson-core-2.13.0.jar:jackson-annotations-2.13.0.jar", "Solution"]
-    """
+    docker_compile_command = (
+        f"docker run --rm --user {os.getuid()}:{os.getgid()} -v {temp_dir}:/usr/src/app -w /usr/src/app --network none --memory=256m --cpus=1 "
+        f"--ulimit cpu=10 --ulimit nofile=512 openjdk:11 javac Solution.java"
+    )
+    compile_process = subprocess.Popen(docker_compile_command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    compile_stdout, compile_stderr = compile_process.communicate()
 
-    dockerfile_path = os.path.join(temp_dir, "Dockerfile")
-    with open(dockerfile_path, "w") as f:
-        f.write(dockerfile_content)
-
-    docker_build_command = f"docker build -t java_execution {temp_dir}"
-    build_process = subprocess.Popen(docker_build_command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    build_stdout, build_stderr = build_process.communicate()
-
-    if build_process.returncode != 0:
-        return build_stderr.decode('utf-8') or build_stdout.decode('utf-8')
+    if compile_process.returncode != 0:
+        return compile_stderr.decode('utf-8') or compile_stdout.decode('utf-8')
 
     docker_run_command = (
-        f"docker run --rm --network none --memory=256m --cpus=1 "
-        f"--ulimit cpu=10 --ulimit nofile=512 java_execution"
+        f"docker run --rm --user {os.getuid()}:{os.getgid()} -v {temp_dir}:/usr/src/app -w /usr/src/app --network none --memory=256m --cpus=1 "
+        f"--ulimit cpu=10 --ulimit nofile=512 openjdk:11 java Solution"
     )
     run_process = subprocess.Popen(docker_run_command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     run_stdout, run_stderr = run_process.communicate()
@@ -292,7 +219,7 @@ def run_java_code(code, function_name, imports, test_cases, temp_dir):
         return run_stdout.decode('utf-8')
     else:
         return run_stderr.decode('utf-8') or run_stdout.decode('utf-8')
-
+    
 def run_rust_code(code, function_name, imports, test_cases, temp_dir):
     cargo_toml = """
     [package]
@@ -605,7 +532,6 @@ def execute_code_task(data, id):
         response.raise_for_status()
     except requests.exceptions.RequestException as e:
         print(f"Error sending callback: {e}")
-
 
 @app.post("/execute")
 async def execute_code(request: CodeExecutionRequest):
