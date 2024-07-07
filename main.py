@@ -476,41 +476,58 @@ def execute_code_task(data, id):
     actual_output = run_code_in_docker(language, code, function_name, imports, test_cases)
     if actual_output is None:
         actual_output = "No output from Docker execution."
-    actual_output = actual_output.strip().split('\n')
+    actual_output_lines = actual_output.strip().split('\n')
 
-    for line in actual_output:
-        if line.strip():
-            try:
-                result = json.loads(line)
-                input_values = try_parse_list(result['inputs'])
-                expected_output = result['expected']
-                actual_result = result['result']
-                passed = result['passed']
-                time = result['time']
-                results.append({
-                    'input': input_values,
-                    'expected_output': expected_output,
-                    'actual_output': actual_result,
-                    'passed': passed,
-                    'time': time,
-                    'memory': 'N/A coming soon'
-                })
-                if not passed:
+    # Detect errors early
+    error_lines = [line for line in actual_output_lines if "error" in line.lower() or "failed" in line.lower()]
+
+    if error_lines:
+        response_payload = {
+            'id': execution_id,
+            'results': [],
+            'all_passed': False,
+            'error': 'Error detected during code execution.',
+            'error_details': ''.join(error_lines)
+        }
+    else:
+        for line in actual_output_lines:
+            if line.strip():
+                try:
+                    result = json.loads(line)
+                    input_values = try_parse_list(result['inputs'])
+                    expected_output = result['expected']
+                    actual_result = result['result']
+                    passed = result['passed']
+                    time = result['time']
+                    results.append({
+                        'input': input_values,
+                        'expected_output': expected_output,
+                        'actual_output': actual_result,
+                        'passed': passed,
+                        'time': time,
+                        'memory': 'N/A coming soon'
+                    })
+                    if not passed:
+                        all_passed = False
+                except json.JSONDecodeError as e:
+                    results.append({
+                        'input': None,
+                        'expected_output': None,
+                        'actual_output': f"JSON decode error: {str(e)} - Line content: {line}",
+                        'passed': False,
+                        'time': "0.0",
+                        'memory': "0.0"
+                    })
                     all_passed = False
-            except json.JSONDecodeError as e:
-                results.append({
-                    'input': None,
-                    'expected_output': None,
-                    'actual_output': f"JSON decode error: {str(e)} - Line content: {line}",
-                    'passed': False,
-                    'time': "0.0",
-                    'memory': "0.0"
-                })
-                all_passed = False
 
-    response_payload = {'id': execution_id, 'results': results, 'all_passed': all_passed}
+        response_payload = {
+            'id': execution_id,
+            'results': results,
+            'all_passed': all_passed
+        }
 
     try:
+        print(json.dumps(response_payload, indent=2))
         response = requests.post(callback_url, json=response_payload)
         response.raise_for_status()
     except requests.exceptions.RequestException as e:

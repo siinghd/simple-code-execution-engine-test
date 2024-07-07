@@ -13,10 +13,13 @@ class TestCaseResult(BaseModel):
     time: Optional[str]
     memory: Optional[str]
 
+
 class ExecutionResult(BaseModel):
     id: str
     results: List[TestCaseResult]
     all_passed: bool
+    error: Optional[str]
+    error_details: Optional[str]
 
 @app.post("/callback")
 async def handle_callback(result: ExecutionResult):
