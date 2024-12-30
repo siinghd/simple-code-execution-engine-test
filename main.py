@@ -17,7 +17,7 @@ app = FastAPI()
 
 # Configure Celery
 celery = Celery(
-    __name__,
+    'code_execution_app',
     broker=os.getenv('CELERY_BROKER_URL'),
     backend=os.getenv('CELERY_RESULT_BACKEND')
 )
@@ -154,72 +154,140 @@ def run_java_code(code, function_name, imports, test_cases, temp_dir):
     
     test_cases_str = ""
     for test_case in test_cases:
-        input_str = ', '.join(map(str, test_case['input']))
-        test_cases_str += f'testCases.add(new Object[]{{new int[][]{{{input_str.replace("[", "{").replace("]", "}")}}}, "{test_case["expected_output"]}"}});\n'
-    
+        input_json = json.dumps(test_case['input'][0]).replace('"', '\\"')
+        test_cases_str += f'        testCases.add(new Object[]{{gson.fromJson("{input_json}", List.class), "{test_case["expected_output"]}"}});\n'
+
     script = f"""
-    import java.util.*;
-    {imports_str}
+import java.util.*;
+import com.google.gson.*;
+import com.google.gson.reflect.TypeToken;
+{imports_str}
 
 public class Solution {{
     public static void main(String[] args) {{
-        
+        Gson gson = new GsonBuilder()
+            .setLenient()
+            .create();
         List<Object[]> testCases = new ArrayList<>();
-        {test_cases_str}
+{test_cases_str}
         
         for (Object[] testCase : testCases) {{
-            
-            int[][] inputs = (int[][]) testCase[0];
-            String expected = (String) testCase[1];
             try {{
+                List<Object> inputs = (List<Object>) testCase[0];
+                String expected = (String) testCase[1];
+                
                 Solution solution = new Solution();
                 long startTime = System.nanoTime();
-                Object result = solution.{function_name}(inputs[0], inputs[1]);
-                long endTime = System.nanoTime(); 
+                
+                Object result = solution.{function_name}(inputs);
+                
+                long endTime = System.nanoTime();
                 long duration = (endTime - startTime);
-                String resultStr = result.toString();
-                boolean passed = resultStr.equals(expected);
-                String json = String.format("{{\\"inputs\\": \\"%s\\", \\"expected\\": \\"%s\\", \\"result\\": \\"%s\\", \\"passed\\": %b, \\"time\\": \\"%s\\"}}",
-                                            Arrays.deepToString(inputs), expected, resultStr, passed, duration);
-                System.out.println(json);
+                
+                String resultStr = String.valueOf(result);
+                
+                Map<String, Object> output = new HashMap<>();
+                // Match exactly what Python expects
+                output.put("result", resultStr);
+                output.put("expected", expected);
+                output.put("inputs", inputs);  // Single list, not nested
+                output.put("passed", resultStr.equals(expected));
+                output.put("time", duration / 1_000_000_000.0);
+                
+                System.out.println(gson.toJson(output));  // No TEST_RESULT markers needed
             }} catch (Exception e) {{
-                String json = String.format("{{\\"inputs\\": \\"%s\\", \\"expected\\": \\"%s\\", \\"result\\": \\"%s\\", \\"passed\\": false, \\"time\\": \\"0.0\\"}}",
-                                            Arrays.deepToString(inputs), expected, e.toString());
-                System.out.println(json);
+                Map<String, Object> error = new HashMap<>();
+                error.put("result", e.toString());
+                error.put("expected", testCase[1]);
+                error.put("inputs", testCase[0]);
+                error.put("passed", false);
+                error.put("time", 0.0);
+                
+                System.out.println(gson.toJson(error));
             }}
         }}
     }}
     
     {code}
-}}
-"""
-
+}}"""
+    # Write the Java file
     script_path = os.path.join(temp_dir, "Solution.java")
     with open(script_path, "w") as f:
         f.write(script)
 
-    docker_compile_command = (
-        f"docker run --rm --user {os.getuid()}:{os.getgid()} -v {temp_dir}:/usr/src/app -w /usr/src/app --network none --memory=256m --cpus=1 "
-        f"--ulimit cpu=10 --ulimit nofile=512 openjdk:11 javac Solution.java"
-    )
-    compile_process = subprocess.Popen(docker_compile_command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    compile_stdout, compile_stderr = compile_process.communicate()
+    print("Generated Java code:")
+    print(script)
 
-    if compile_process.returncode != 0:
-        return compile_stderr.decode('utf-8') or compile_stdout.decode('utf-8')
+    # Compile and run commands
+    docker_compile_command = (
+        f"docker run --rm -v {temp_dir}:/app -w /app openjdk:11 bash -c '"
+        f"curl -s https://repo1.maven.org/maven2/com/google/code/gson/gson/2.8.9/gson-2.8.9.jar -o gson.jar && "
+        f"javac -cp gson.jar Solution.java'"
+    )
 
     docker_run_command = (
-        f"docker run --rm --user {os.getuid()}:{os.getgid()} -v {temp_dir}:/usr/src/app -w /usr/src/app --network none --memory=256m --cpus=1 "
-        f"--ulimit cpu=10 --ulimit nofile=512 openjdk:11 java Solution"
+        f"docker run --rm -v {temp_dir}:/app -w /app openjdk:11 "
+        f"java -cp '.:/app/gson.jar' Solution"
     )
-    run_process = subprocess.Popen(docker_run_command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    run_stdout, run_stderr = run_process.communicate()
 
-    if run_process.returncode == 0:
-        return run_stdout.decode('utf-8')
-    else:
-        return run_stderr.decode('utf-8') or run_stdout.decode('utf-8')
-    
+    try:
+        # Compile
+        compile_result = subprocess.run(
+            docker_compile_command, 
+            shell=True, 
+            capture_output=True, 
+            text=True,
+            cwd=temp_dir
+        )
+        
+        if compile_result.returncode != 0:
+            print("Compilation Error:", compile_result.stderr)
+            return json.dumps({
+                "results": [],
+                "all_passed": False,
+                "error": "Compilation error",
+                "error_details": compile_result.stderr or compile_result.stdout
+            })
+
+        # Run
+        run_result = subprocess.run(
+            docker_run_command, 
+            shell=True, 
+            capture_output=True, 
+            text=True,
+            cwd=temp_dir
+        )
+        
+        output = run_result.stdout or run_result.stderr
+        print("Raw Java Output:", output)  # Debug line
+        
+        try:
+            result = json.loads(output)
+            print("Parsed JSON:", result)  # Debug line
+        except json.JSONDecodeError as e:
+            print("JSON Parse Error:", str(e))
+            print("Failed to parse:", output)
+            
+        return json.dumps({
+            "results": [{
+                "input": test_case['input'],
+                "expected_output": test_case['expected_output'],
+                "actual_output": result.get('result', 'Error: No result'),
+                "passed": result.get('passed', False),
+                "time": str(result.get('time', 0.0)),
+                "memory": "N/A"
+            } for test_case, result in zip(test_cases, [result])],
+            "all_passed": all(r.get("passed", False) for r in [result])
+        })
+
+    except Exception as e:
+        print("Exception:", str(e))  # Debug line
+        return json.dumps({
+            "results": [],
+            "all_passed": False,
+            "error": "Runtime error",
+            "error_details": str(e)
+        })
 def run_rust_code(code, function_name, imports, test_cases, temp_dir):
     cargo_toml = """
     [package]
@@ -461,7 +529,7 @@ def get_docker_memory_usage(container_name):
 
     return memory_usage
 
-@celery.task
+@celery.task(name='code_execution_app.execute_code_task')
 def execute_code_task(data, id):
     execution_id = id
     language = data['language']
@@ -471,68 +539,58 @@ def execute_code_task(data, id):
     test_cases = data['test_cases']
     callback_url = data['callback_url']
     results = []
-    all_passed = True
 
     actual_output = run_code_in_docker(language, code, function_name, imports, test_cases)
-    if actual_output is None:
+    if not actual_output:
         actual_output = "No output from Docker execution."
-    actual_output_lines = actual_output.strip().split('\n')
 
-    # Detect errors early
-    error_lines = [line for line in actual_output_lines if "error" in line.lower() or "failed" in line.lower()]
+    # Parse the single JSON output from Java
+    try:
+        # Clean up any leading/trailing whitespace
+        actual_output = actual_output.strip()
+        print(f"Processing output: {actual_output}")  # Debug log
+        
+        result_json = json.loads(actual_output)
+        print(f"Parsed JSON: {result_json}")  # Debug log
+        
+        # Create a single result object in our expected format
+        result = {
+            'input': result_json.get('inputs', []),  # Use get() with default
+            'expected_output': result_json.get('expected', ''),
+            'actual_output': result_json.get('result', ''),
+            'passed': result_json.get('passed', False),
+            'time': str(result_json.get('time', 0.0)),
+            'memory': 'N/A'
+        }
+        
+        results.append(result)
+        
+        response_payload = {
+            'id': execution_id,
+            'results': results,
+            'all_passed': result.get('passed', False)
+        }
 
-    if error_lines:
+    except Exception as e:
+        print(f"Error processing results: {str(e)}")  # Debug log
         response_payload = {
             'id': execution_id,
             'results': [],
             'all_passed': False,
-            'error': 'Error detected during code execution.',
-            'error_details': ''.join(error_lines)
-        }
-    else:
-        for line in actual_output_lines:
-            if line.strip():
-                try:
-                    result = json.loads(line)
-                    input_values = try_parse_list(result['inputs'])
-                    expected_output = result['expected']
-                    actual_result = result['result']
-                    passed = result['passed']
-                    time = result['time']
-                    results.append({
-                        'input': input_values,
-                        'expected_output': expected_output,
-                        'actual_output': actual_result,
-                        'passed': passed,
-                        'time': time,
-                        'memory': 'N/A coming soon'
-                    })
-                    if not passed:
-                        all_passed = False
-                except json.JSONDecodeError as e:
-                    results.append({
-                        'input': None,
-                        'expected_output': None,
-                        'actual_output': f"JSON decode error: {str(e)} - Line content: {line}",
-                        'passed': False,
-                        'time': "0.0",
-                        'memory': "0.0"
-                    })
-                    all_passed = False
-
-        response_payload = {
-            'id': execution_id,
-            'results': results,
-            'all_passed': all_passed
+            'error': f"Error processing results: {str(e)}",
+            'error_details': actual_output
         }
 
     try:
-        print(json.dumps(response_payload, indent=2))
+        print(f"Sending callback payload: {json.dumps(response_payload, indent=2)}")
         response = requests.post(callback_url, json=response_payload)
+        print(f"Callback response status: {response.status_code}")
+        print(f"Callback response content: {response.text}")
         response.raise_for_status()
     except requests.exceptions.RequestException as e:
         print(f"Error sending callback: {e}")
 
+    return response_payload
 @app.post("/execute")
 async def execute_code(request: CodeExecutionRequest):
     try:
