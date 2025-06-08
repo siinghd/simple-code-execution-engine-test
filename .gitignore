@@ -51,7 +51,7 @@ coverage.xml
 .hypothesis/
 .pytest_cache/
 cover/
-
+.claude/
 # Translations
 *.mo
 *.pot
@@ -94,6 +94,7 @@ ipython_config.py
 #   having no cross-platform support, pipenv may install dependencies that don't work, or not
 #   install all needed dependencies.
 #Pipfile.lock
+
 
 # poetry
 #   Similar to Pipfile.lock, it is generally recommended to include poetry.lock in version control.
@@ -155,6 +156,7 @@ dmypy.json
 # Cython debug symbols
 cython_debug/
 
+.vscode/*
 # PyCharm
 #  JetBrains specific template is maintained in a separate JetBrains.gitignore that can
 #  be found at https://github.com/github/gitignore/blob/main/Global/JetBrains.gitignore
